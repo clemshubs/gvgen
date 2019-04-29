@@ -23,7 +23,7 @@ from __future__ import print_function
 from six import iteritems
 from sys import stdout
 
-gvgen_version = "0.9.2"
+gvgen_version = "0.9.3"
 
 debug = 0
 debug_tree_unroll = 0
@@ -53,8 +53,6 @@ class GvGen:
         self.__id = 0
         self.__nodes = []
         self.__links = []
-        self.__browse_level = 0                  # Stupid depth level for self.browse
-        self.__opened_braces = []                # We count opened clusters
         self.fd = stdout                           # File descriptor to output dot
         self.padding_str = "   "                   # Left padding to make children and parent look nice
         self.__styles = {}
@@ -91,7 +89,6 @@ class GvGen:
         # We now insert into gvgen datastructure
         self.__id += 1
         node = {'id': self.__id,        # Internal ID
-                'lock': 0,              # When the node is written, it is locked to avoid further references
                 'parent': parent,       # Node parent for easy graphviz clusters
                 'style': None,          # Style that GvGen allow you to create
                 'properties': {         # Custom graphviz properties you can add, which will overide previously defined styles
@@ -99,11 +96,8 @@ class GvGen:
                    }
                 }
 
-        # Parents should be sorted first
-        if parent:
-                 self.__nodes.insert(1, self.__nodes.pop(self.__nodes.index(parent)))
-
         self.__nodes.append(node)
+
         return node
 
     def __link_smart(self, link):
@@ -217,33 +211,6 @@ class GvGen:
         for e in self.__nodes:
             print("element = {0}".format(e['id']))
 
-    def collectLeaves(self, parent):
-        """
-        Collect every leaf sharing the same parent
-        """
-        cl = []
-        for e in self.__nodes:
-            if e['parent'] == parent:
-                cl.append(e)
-
-        return cl
-
-    def collectUnlockedLeaves(self, parent):
-        """
-        Collect every leaf sharing the same parent
-        unless it is locked
-        """
-        cl = []
-        for e in self.__nodes:
-            if e['parent'] == parent:
-                if not e['lock']:
-                    cl.append(e)
-
-        return cl
-
-    def lockNode(self, node):
-        node['lock'] = 1
-
     #
     # Start: styles management
     #
@@ -266,7 +233,7 @@ class GvGen:
     #
     # Start: properties management
     #
-    def propertiesAsStringGet(self, node, props):
+    def propertiesAsStringGet(self, node, props,level=0):
         """
         Get the properties string according to parent/children
         props is the properties dictionary
@@ -294,7 +261,7 @@ class GvGen:
         allProps.update(props)
 
         if self.__has_children(node):
-            propStringList = ["%s=\"%s\";\n" % (k, v) for k, v in iteritems(allProps)]
+            propStringList = [level*self.padding_str+"%s=\"%s\";\n" % (k, v) for k, v in iteritems(allProps)]
             properties = ''.join(propStringList)
         else:
             if props:
@@ -366,7 +333,7 @@ class GvGen:
 
     def legendAppend(self, legendstyle, legenddescr, labelin=None):
         
-	# Determining if we need links according to rankdir
+    # Determining if we need links according to rankdir
         needLinks=True
 
         if "rankdir" not in self.options:
@@ -381,17 +348,17 @@ class GvGen:
             elif self.options['rankdir'] == "BT":
                 needLinks=True
 
-	# if the label is in the shape
+        # if the label is in the shape
         if labelin:
 
-	    # creating shape with label
+        # creating shape with label
             item = self.newItem(legenddescr, self.legend)
             self.styleApply(legendstyle, item)
 
-	    # if links needed
+        # if links needed
             if needLinks: 
                 
-		# we link all the nodes if they are here
+        # we link all the nodes if they are here
                 if self.__has_children(self.legend):
 
                     # remember the previous one
@@ -407,26 +374,26 @@ class GvGen:
                         previousNode=node
             
         else:
-	    #creating shapes and labels separately
+        #creating shapes and labels separately
             style = self.newItem("", self.legend)
             descr = self.newItem(legenddescr, self.legend)
             self.styleApply(legendstyle, style)
             link = self.newLink(style, descr)
 
-	    #linking labels and shapes
+        #linking labels and shapes
             self.propertyAppend(link, "dir", "none")
             self.propertyAppend(link, "style", "invis")
             self.propertyAppend(descr, "shape", "plaintext")
    
             #if links needed
             if needLinks: 
-	        # removing constraints
+            # removing constraints
                 self.propertyAppend(link, "constraint", "false")
 
                 # we link all the nodes if they are here
                 if  self.__has_children(self.legend):
                 
-		   # remember the previous one
+                    # remember the previous one
                     previousNode = None
                     previousLabel = None
         
@@ -439,7 +406,7 @@ class GvGen:
                                 self.propertyAppend(link, "dir", "none")
                                 self.propertyAppend(link, "style", "invis")
 
-			    #remembering ...
+                            #remembering ...
                             previousNode=node
 
                         else:
@@ -449,124 +416,9 @@ class GvGen:
                                 self.propertyAppend(link, "dir", "none")
                                 self.propertyAppend(link, "style", "invis")
 
-			    #remembering previous label for next iteration
+                            #remembering previous label for next iteration
                             previousLabel=node
     
-    def tree_debug(self, level, node, children):
-        if children:
-            print("(level:{0}) Eid:{1} has children ({2})").format(
-                level, node['id'], str(children)
-            )
-        else:
-            print("Eid: {0} has no children".format(str(node['id'])))
-
-    #
-    # Core function that outputs the data structure tree into dot language
-    #
-    def tree(self, level, node, children):
-        """
-        Core function to output dot which sorts out parents and children
-        and do it in the right order
-        """
-        if debug:
-            print("/* Grabed node = {0}*/".format(str(node['id'])))
-
-        if node['lock'] == 1:            # The node is locked, nothing should be printed
-            if debug:
-                print("/* The node ({0}) is locked */".format(str(node['id'])))
-
-            if self.__opened_braces:
-                self.fd.write(level * self.padding_str)
-                self.fd.write("}\n")
-                self.__opened_braces.pop()
-            return
-
-        props = node['properties']
-
-        if children:
-            node['lock'] = 1
-            self.fd.write(level * self.padding_str)
-            self.fd.write(self.padding_str + "subgraph cluster%d {\n" % node['id'])
-            properties = self.propertiesAsStringGet(node, props)
-            self.fd.write(level * self.padding_str)
-            self.fd.write(self.padding_str + "%s" % properties)
-            self.__opened_braces.append([node, level])
-        else:
-            # We grab appropriate properties
-            properties = self.propertiesAsStringGet(node, props)
-
-            # We get the latest opened elements
-            if self.__opened_braces:
-                last_cluster, last_level = self.__opened_braces[-1]
-            else:
-                last_cluster = None
-                last_level = 0
-
-            if debug:
-                if node['parent']:
-                    parent_str = str(node['parent']['id'])
-                else:
-                    parent_str = 'None'
-                if last_cluster:
-                    last_cluster_str = str(last_cluster['id'])
-                else:
-                    last_cluster_str = 'None'
-                print("/* e[parent] = {0}, last_cluster = {1}, last_level = {2}, opened_braces: {3} */".format( # NOQA
-                    parent_str, last_cluster_str, last_level, str(self.__opened_braces)
-                ))
-
-            # Write children/parent with properties
-            if node['parent']:
-                if node['parent'] != last_cluster:
-                    while last_cluster and node['parent'] < last_cluster:
-                        last_cluster, last_level = self.__opened_braces[-1]
-                        if node['parent'] == last_cluster:
-                            last_level += 1
-                            # We browse any property to build a string
-                            self.fd.write(last_level * self.padding_str)
-                            self.fd.write(self.padding_str + "node%d %s;\n" % (node['id'], properties))
-                            node['lock'] = 1
-                        else:
-                            self.fd.write(last_level * self.padding_str)
-                            self.fd.write(self.padding_str + "}\n")
-                            self.__opened_braces.pop()
-                else:
-                    self.fd.write(level * self.padding_str)
-                    self.fd.write(self.padding_str + "node%d %s;\n" % (node['id'], properties))
-                    node['lock'] = 1
-                    cl = self.collectUnlockedLeaves(node['parent'])
-                    for l in cl:
-                        props = l['properties']
-                        properties = self.propertiesAsStringGet(l, props)
-                        self.fd.write(last_level * self.padding_str)
-                        self.fd.write(self.padding_str + self.padding_str + "node%d %s;\n" % (l['id'], properties))
-                        node['lock'] = 1
-                        self.lockNode(l)
-
-                    self.fd.write(level * self.padding_str + "}\n")
-                    self.__opened_braces.pop()
-
-            else:
-                self.fd.write(self.padding_str + "node%d %s;\n" % (node['id'], properties))
-                node['lock'] = 1
-
-    def browse(self, node, cb):
-        """
-        Browse nodes in a tree and calls cb providing node parameters
-        """
-        children = self.__has_children(node)
-        if children:
-            cb(self.__browse_level, node, str(children))
-            for c in children:
-                self.__browse_level += 1
-                self.browse(c, cb)
-
-        else:
-            cb(self.__browse_level, node, None)
-            self.__browse_level = 0
-#            if debug:
-#                print "This node is not a child: " + str(node)
-
     def dotLinks(self, node):
         """
         Write links between nodes
@@ -597,7 +449,7 @@ class GvGen:
                     dst = l['to_node']['id']
                     cluster_dst = ''
 
-                self.fd.write("node%d->node%d" % (src, dst))
+                self.fd.write(self.padding_str + "node%d->node%d" % (src, dst))
 
                 props = self.propertiesLinkAsStringGet(l)
 
@@ -629,26 +481,46 @@ class GvGen:
 
             if self.options:
                 for key, value in iteritems(self.options):
-                    self.fd.write("%s=%s;" % (key, value))
-                self.fd.write("\n")
+                    self.fd.write(self.padding_str + "%s=%s;\n" % (key, value))
 
-            # We write parents and children in order
+            # We loop on root nodes (i.e. without parent)
             for e in self.__nodes:
-                if debug_tree_unroll:
-                        self.browse(e, self.tree_debug)
-                else:
-                        self.browse(e, self.tree)
+                if not e['parent']:
+                    self.trace(e)
 
             # We write the connection between nodes
             for e in self.__nodes:
                 self.dotLinks(e)
 
             # We put all the nodes belonging to the parent
-            self.fd.write("}\n")
+            self.fd.write("}")
         finally:
             # Remove our reference to file descriptor
             self.fd = None
 
+    # as we say in french : de deux choses l une
+    # either it is a subgraph, either it is a node
+    # if it has children, it is a subgraph and I call trace again
+    # else I draw nodes.
+    def trace(self,node,level=1):
+    
+        if self.__has_children(node):
+            # if child then subgraph
+            # padding and subgraph 
+            self.fd.write("\n"+level * self.padding_str + "subgraph cluster%d {\n" % node['id'])
+            # properties
+            self.fd.write("%s" % self.propertiesAsStringGet(node, node['properties'],level+1))
+
+            # looping on children
+            for child in self.__has_children(node):
+                self.trace(child,level+1)
+
+            # closing subgraph
+            self.fd.write(level * self.padding_str + "}\n\n")
+        else:
+            
+            # if no child then its a node
+            self.fd.write(level * self.padding_str + "node%d %s;\n" % (node['id'], self.propertiesAsStringGet(node,node['properties'],level)))
 
 if __name__ == "__main__":
     graph = GvGen()
